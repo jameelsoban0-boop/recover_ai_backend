@@ -1,9 +1,8 @@
 const multer = require("multer");
 const path = require("path");
-const fs = require("fs");
+const { resolveUploadDir } = require("./utils/resolveUploadDir");
 
-const dir = "./uploads/profile";
-if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+const dir = resolveUploadDir("./uploads/profile");
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
