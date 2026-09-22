@@ -1,5 +1,4 @@
 const bcrypt = require("bcrypt");
-const mongoose = require("mongoose");
 const { OAuth2Client } = require("google-auth-library");
 const { setUser } = require("../services/userAuthService");
 const {
@@ -213,13 +212,8 @@ async function handleGoogleLogin(req, res) {
 
 async function handleGetProfile(req, res) {
   try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid user ID" });
-    }
-    if (String(req.authUser?._id) !== id) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
+    const id = req.authUser?._id;
+    if (!id) return res.status(401).json({ error: "Unauthorized" });
 
     const user = await User.findById(id).select(
       "-otp -resetOTP -password -emailVerified"
@@ -237,13 +231,8 @@ async function handleGetProfile(req, res) {
 
 async function handleUpdateProfile(req, res) {
   try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid user ID" });
-    }
-    if (String(req.authUser?._id) !== id) {
-      return res.status(403).json({ message: "Forbidden" });
-    }
+    const id = req.authUser?._id;
+    if (!id) return res.status(401).json({ message: "Unauthorized" });
 
     const user = await User.findById(id);
     if (!user) {

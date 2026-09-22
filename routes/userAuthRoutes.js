@@ -23,8 +23,8 @@ router.post("/verify-otp", handleVerifyOTP);
 router.post("/login", upload.single("image"), handleUserLogin);
 router.post("/google-login", handleGoogleLogin);
 
-router.get("/profile/:id", authenticate, handleGetProfile);
-router.put("/profile/:id", authenticate, uploadProfile.single("profileImage"), handleUpdateProfile);
+router.get("/profile", authenticate, handleGetProfile);
+router.put("/profile", authenticate, uploadProfile.single("profileImage"), handleUpdateProfile);
 router.delete("/account", authenticate, handleDeleteAccount);
 
 router.post("/forgot-password", handleForgotPassword);
