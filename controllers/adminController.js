@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const User = require("../models/usersModel");
+const User = require("../models/userModel");
 const PushDeviceToken = require("../models/pushDeviceTokenModel");
 const ChatUsage = require("../models/chatUsageModel");
 const BackupGuardConfig = require("../models/backupGuardConfigModel");
@@ -10,7 +10,7 @@ const {
   computeUserIsPro,
   getCareChatLimitForUser,
   isGuestUser,
-} = require("../services/careLimitService");
+} = require("../services/chatUsageLimitService");
 
 async function getUsers(req, res) {
   try {

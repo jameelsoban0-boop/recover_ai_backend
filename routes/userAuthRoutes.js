@@ -11,10 +11,10 @@ const {
   handleResetPassword,
   handleGetAiPrivacy,
   handleUpdateAiPrivacy,
-} = require("../controllers/userAuthControllers");
+} = require("../controllers/userAuthController");
 const { checkUserExistsByEmail, authenticate } = require("../middlewares/authMiddleware");
-const upload = require("../uploads");
-const uploadProfile = require("../uploadsProfile");
+const upload = require("../authImageUpload");
+const uploadProfile = require("../profileImageUpload");
 
 const router = express.Router();
 

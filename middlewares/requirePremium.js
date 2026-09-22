@@ -1,4 +1,4 @@
-const { computeUserIsPro } = require("../services/careLimitService");
+const { computeUserIsPro } = require("../services/chatUsageLimitService");
 
 /**
  * Blocks non-Premium users from a route. Must run after `authenticate`

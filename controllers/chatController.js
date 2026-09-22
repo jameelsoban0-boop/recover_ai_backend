@@ -2,16 +2,16 @@ const mongoose = require("mongoose");
 const OpenAI = require("openai");
 const ChatSession = require("../models/chatModel");
 const ChatUsage = require("../models/chatUsageModel");
-const User = require("../models/usersModel");
+const User = require("../models/userModel");
 const { NETWORK_ERROR, INVALID_ID, NOT_FOUND } = require("../messages/message");
 const { verifyIapPurchase, isKnownPremiumProduct } = require("../services/iapVerificationService");
-const { getOpenAiApiKey } = require("../services/openaiKey.service");
+const { getOpenAiApiKey } = require("../services/openAiKeyService");
 const {
   buildCareLimitConfig,
   computeUserIsPro,
   getCareChatLimitForUser,
   isGuestUser,
-} = require("../services/careLimitService");
+} = require("../services/chatUsageLimitService");
 const STORE_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STORE_REFRESH_EXPIRY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -83,7 +83,7 @@ function deriveTitle(content) {
 }
 
 // The OpenAI client is rebuilt only when the cached key changes (see
-// services/openaiKey.service.js) so most requests reuse the same client.
+// services/openAiKeyService.js) so most requests reuse the same client.
 let chatOpenAiClient = null;
 let chatOpenAiClientKey = null;
 

@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const User = require("../models/usersModel");
+const User = require("../models/userModel");
 const PushDeviceToken = require("../models/pushDeviceTokenModel");
 const { ensureFirebaseAdmin } = require("../utils/firebaseAdminInit");
 

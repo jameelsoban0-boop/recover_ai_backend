@@ -8,7 +8,7 @@ const {
   buildOtpEmailHtml,
   logOtp,
 } = require("../services/emailService");
-const User = require("../models/usersModel");
+const User = require("../models/userModel");
 const ChatSession = require("../models/chatModel");
 const ChatUsage = require("../models/chatUsageModel");
 const PushDeviceToken = require("../models/pushDeviceTokenModel");
@@ -217,6 +217,9 @@ async function handleGetProfile(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid user ID" });
     }
+    if (String(req.authUser?._id) !== id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const user = await User.findById(id).select(
       "-otp -resetOTP -password -emailVerified"
@@ -237,6 +240,9 @@ async function handleUpdateProfile(req, res) {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid user ID" });
+    }
+    if (String(req.authUser?._id) !== id) {
+      return res.status(403).json({ message: "Forbidden" });
     }
 
     const user = await User.findById(id);

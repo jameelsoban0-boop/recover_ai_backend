@@ -1,6 +1,6 @@
 const RestoreOrganiserActivity = require("../models/restoreOrganiserActivityModel");
 const { NETWORK_ERROR } = require("../messages/message");
-const { computeUserIsPro } = require("../services/careLimitService");
+const { computeUserIsPro } = require("../services/chatUsageLimitService");
 
 /**
  * GET /api/restore-organiser/access

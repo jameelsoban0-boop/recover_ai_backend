@@ -1,4 +1,4 @@
-const User = require("../models/usersModel");
+const User = require("../models/userModel");
 const {
   EMAIL_REQUIRED,
   USER_EXISTS,
@@ -7,7 +7,7 @@ const path = require("path");
 const fs = require("fs");
 const { getUser } = require("../services/userAuthService");
 
-/** JWT bearer auth — loads user from DB (same pattern as ai_image_generator_backend). */
+/** JWT bearer auth — verifies the token and loads the user from MongoDB. */
 async function authenticate(req, res, next) {
   const token = req.headers.authorization?.replace("Bearer ", "");
   if (!token) return res.status(401).json({ error: "Unauthorized" });
