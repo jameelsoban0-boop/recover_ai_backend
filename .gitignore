@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Service-account credentials (contain private keys)
+firebase-service-account.json
+google-play-service-account.json
+
+# Runtime user uploads (generated at request time, not project source)
+uploads/app-promos/
+uploads/profile/
+uploads/*.jpg
+uploads/*.jpeg
+uploads/*.png
+uploads/*.webp
+uploads/*.gif
+
+# Logs
+*.log
+logs/
+coverage/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
