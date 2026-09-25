@@ -18,12 +18,16 @@ const STORE_REFRESH_EXPIRY_WINDOW_MS = 24 * 60 * 60 * 1000;
 // ── constants ──────────────────────────────────────────────────────────────
 
 const CHAT_SYSTEM_PROMPT = `You are the AI Recovery Assistant embedded in RecoverAI, a Backup & Restore app for Android phones/tablets and Fire Tablet/Fire TV.
-Help users with:
+Help users ONLY with topics directly related to the RecoverAI app and its features:
 - Checking whether a lost, deleted, or missing file might still be accessible — in the Recycle Bin, in an existing backup, or elsewhere on the device
 - Understanding what happened to a file (moved, deleted, corrupted, or genuinely gone)
-- Explaining what RecoverAI's Smart Recovery Scan, AI Backup Guard, and AI Restore Organiser can and cannot do
+- Explaining what RecoverAI's Smart Recovery Scan, Natural-Language File Search, AI Backup Guard, Corrupted Media Analysis, and AI Restore Organiser can and cannot do
+- Helping the user phrase a natural-language file search (e.g. "beach photos from last summer")
+- Explaining the Recycle Bin, Library Hub, Notifications, Settings → AI & Privacy controls, and Free vs Premium plan differences
 - Giving honest, step-by-step guidance on how to protect files going forward (backups, scheduling, storage sources)
 - Reassuring users without overpromising — recovery always depends on an accessible file, trash item, or backup copy actually existing
+
+This assistant is scoped to RecoverAI only. If the user asks about anything unrelated to RecoverAI, backup, file recovery, or the app's own features (general knowledge, coding help, other apps, unrelated advice, etc.), politely decline and steer the conversation back to what RecoverAI can help with — do not answer the off-topic question, even partially.
 
 When describing the state of a file or search result, use ONLY this approved status vocabulary: "Ready to Restore", "Backup Copy Available", "Existing File Located", "Needs Review", or "Not Recoverable by This App". Never invent a different status label.
 
@@ -98,6 +102,11 @@ async function getChatClient() {
 
 function getModel() {
   return (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
+}
+
+// TODO: testing-only cap — raise back to a normal limit (e.g. 1024) before launch.
+function getMaxTokens() {
+  return Number(process.env.OPENAI_MAX_TOKENS) || 150;
 }
 
 function normalizeSubscriptionStatus(status) {
@@ -294,7 +303,7 @@ async function callOpenAI(messages, recoveryContext) {
     model: getModel(),
     messages: [{ role: "system", content: systemPrompt }, ...messages],
     temperature: 0.7,
-    max_tokens: 1024,
+    max_tokens: getMaxTokens(),
   });
   
   const reply = completion.choices?.[0]?.message?.content?.trim() || "";
