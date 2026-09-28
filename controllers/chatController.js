@@ -11,6 +11,7 @@ const {
   computeUserIsPro,
   getCareChatLimitForUser,
   isGuestUser,
+  GUEST_CHAT_LIMIT,
 } = require("../services/chatUsageLimitService");
 const STORE_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STORE_REFRESH_EXPIRY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -322,9 +323,15 @@ async function callOpenAI(messages, recoveryContext) {
  * POST /api/chat/guest
  * Stateless: no auth, no history saved. Just calls AI and returns the reply.
  * Body: { messages: [{ role: "user"|"assistant", content: string }, ...] }
+ *
+ * When the app sends an `x-device-id` header (a stable per-device id — see
+ * DeviceIdentityService on the client), the guest chat limit is enforced
+ * server-side per device, so it survives a client-side reset (app
+ * reinstall/data clear) instead of relying only on the app's local counter.
  */
 async function handleGuestChat(req, res) {
   const { messages, recoveryContext } = req.body;
+  const deviceId = String(req.headers["x-device-id"] || "").trim() || null;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: "messages array is required" });
@@ -342,8 +349,29 @@ async function handleGuestChat(req, res) {
 
   const payload = messages.map((m) => ({ role: m.role, content: m.content.trim() }));
 
-  console.log("[chat guest] request — messages:", payload.length, "| recoveryContext:", !!recoveryContext);
+  console.log("[chat guest] request — messages:", payload.length, "| recoveryContext:", !!recoveryContext, "| deviceId:", deviceId || "(none)");
   if (recoveryContext) console.log("[chat guest] recoveryContext:\n", recoveryContext);
+
+  let usedBefore = 0;
+  if (deviceId) {
+    try {
+      usedBefore = await ChatUsage.countDocuments({ requestType: "guest", deviceId });
+    } catch (err) {
+      console.error("[chat guest] usage lookup failed:", err.message);
+    }
+    if (usedBefore >= GUEST_CHAT_LIMIT) {
+      return res.status(402).json({
+        code: "CHAT_LIMIT_REACHED",
+        error: "Guest chat limit reached. Sign in or upgrade to continue chatting.",
+        entitlement: {
+          isGuest: true,
+          limit: GUEST_CHAT_LIMIT,
+          used: usedBefore,
+          remaining: 0,
+        },
+      });
+    }
+  }
 
   let result;
   try {
@@ -366,14 +394,23 @@ async function handleGuestChat(req, res) {
       requestType: "guest",
       model: getModel(),
       usage,
+      deviceId,
     });
   } catch (usageErr) {
     console.error("[chat guest] usage tracking failed:", usageErr.message);
     // Don't fail the response if tracking fails
   }
-  
+
   console.log("[chat guest] reply length:", reply.length);
-  return res.json({ reply });
+  const entitlement = deviceId
+    ? {
+        isGuest: true,
+        limit: GUEST_CHAT_LIMIT,
+        used: usedBefore + 1,
+        remaining: Math.max(0, GUEST_CHAT_LIMIT - (usedBefore + 1)),
+      }
+    : undefined;
+  return res.json({ reply, ...(entitlement ? { entitlement } : {}) });
 }
 
 // ── authenticated respond ──────────────────────────────────────────────────

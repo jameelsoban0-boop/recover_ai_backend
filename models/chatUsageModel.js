@@ -14,6 +14,14 @@ const chatUsageSchema = new mongoose.Schema(
       index: true,
       default: null,
     },
+    // Stable per-device identifier (Android ID, or a persisted UUID fallback)
+    // sent by the app as the `x-device-id` header. Used to enforce the guest
+    // chat limit server-side so it survives an app reinstall/data clear.
+    deviceId: {
+      type: String,
+      index: true,
+      default: null,
+    },
     requestType: {
       type: String,
       enum: ["guest", "authenticated", "faq-chat"],
