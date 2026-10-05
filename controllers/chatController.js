@@ -182,6 +182,7 @@ async function applyStoreVerification(user, verification) {
     ...(user.subscription || {}),
     status: verification.status || "active",
     expiresAt: verification.expiresAt ? new Date(verification.expiresAt) : null,
+    autoRenewing: verification.autoRenewing !== false,
     source: verification.source || "google_play",
     lastVerifiedAt: new Date(),
   };
@@ -264,6 +265,7 @@ async function buildEntitlement(user, options = {}) {
       productId: user?.subscription?.productId || null,
       platform: amazonUnlimited ? "amazon" : user?.subscription?.platform || "none",
       expiresAt: user?.subscription?.expiresAt || null,
+      autoRenewing: user?.subscription?.autoRenewing !== false,
       lastVerifiedAt: user?.subscription?.lastVerifiedAt || null,
       source: amazonUnlimited ? "amazon" : user?.subscription?.source || "none",
     },
@@ -760,7 +762,9 @@ async function handleGetEntitlement(req, res) {
   try {
     const user = await User.findById(req.authUser._id);
     if (!user) return res.status(404).json({ error: NOT_FOUND });
-    await refreshStoredStoreSubscription(user);
+    // ?refresh=1: the app asks for a live store re-check (e.g. after returning
+    // from the store's manage-subscription page) so cancel/renew shows at once.
+    await refreshStoredStoreSubscription(user, { force: req.query?.refresh === "1" });
     return res.json({
       success: true,
       entitlement: await buildEntitlement(user, {

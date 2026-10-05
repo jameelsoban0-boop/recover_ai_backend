@@ -98,6 +98,7 @@ function buildAndroidSubscriptionResult(data) {
   return {
     ok: active,
     status: active ? "active" : "expired",
+    autoRenewing: active ? data?.autoRenewing !== false : false,
     expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
     platform: "android",
     source: "google_play",
@@ -140,6 +141,10 @@ function buildAndroidSubscriptionV2Result(data, productId) {
   return {
     ok: active,
     status: active ? "active" : "expired",
+    autoRenewing: active
+      ? autoRenewingPlan?.autoRenewEnabled !== false &&
+        subscriptionState !== "SUBSCRIPTION_STATE_CANCELED"
+      : false,
     expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
     platform: "android",
     source: "google_play_v2",
@@ -185,6 +190,7 @@ function buildAmazonSubscriptionResult(data, productId, receiptId) {
   return {
     ok: active,
     status: active ? "active" : "expired",
+    autoRenewing: active ? data?.autoRenewing !== false : false,
     expiresAt: renewalDateMs ? new Date(renewalDateMs).toISOString() : null,
     platform: "amazon",
     source: "amazon_rvs",

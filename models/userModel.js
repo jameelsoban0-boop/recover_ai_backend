@@ -104,6 +104,7 @@ const userSchema = new mongoose.Schema(
         default: "inactive",
       },
       expiresAt: Date,
+      autoRenewing: { type: Boolean, default: true },
       lastVerifiedAt: Date,
       source: {
         type: String,
