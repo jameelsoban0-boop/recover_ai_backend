@@ -184,18 +184,26 @@ function buildAmazonSubscriptionResult(data, productId, receiptId) {
   const renewalDateMs = Number(data?.renewalDate || 0);
   const purchaseDateMs = Number(data?.purchaseDate || 0);
   const now = Date.now();
+  // Amazon RVS identifies the SKU in `productId` (older payloads: `sku`).
+  const responseProductId = data?.productId || data?.sku;
+  const productMatches = Boolean(responseProductId) && responseProductId === productId;
+  const receiptMatches = Boolean(data?.receiptId) && data.receiptId === receiptId;
+  const isSubscription = data?.productType === "SUBSCRIPTION";
+  const identityValid = productMatches && receiptMatches && isSubscription;
   const active =
-    !cancelDateMs && (!renewalDateMs || renewalDateMs > now) && data?.sku === productId;
+    identityValid && !cancelDateMs && (!renewalDateMs || renewalDateMs > now);
 
   return {
     ok: active,
-    status: active ? "active" : "expired",
+    status: !identityValid ? "invalid" : active ? "active" : "expired",
+    retryable: false,
     autoRenewing: active ? data?.autoRenewing !== false : false,
     expiresAt: renewalDateMs ? new Date(renewalDateMs).toISOString() : null,
     platform: "amazon",
     source: "amazon_rvs",
     payload: {
       receiptId,
+      productId: responseProductId,
       sku: data?.sku,
       productType: data?.productType,
       purchaseDate: purchaseDateMs ? new Date(purchaseDateMs).toISOString() : null,
@@ -225,10 +233,22 @@ async function verifyAmazonPurchase({ productId, purchaseToken, storeUserId }) {
     purchaseToken
   )}`;
 
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  let response;
+  try {
+    response = await fetch(url, { headers: { Accept: "application/json" } });
+  } catch (e) {
+    const err = new Error(`Amazon RVS request failed: ${e.message}`);
+    err.retryable = true;
+    throw err;
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data?.message || `Amazon RVS verify failed (${response.status})`);
+    const err = new Error(data?.message || `Amazon RVS verify failed (${response.status})`);
+    err.httpStatus = response.status;
+    // 400/404/410 = definitive invalid/cancelled receipt; anything else is
+    // transient/config and must not revoke an existing subscription.
+    err.retryable = ![400, 404, 410].includes(response.status);
+    throw err;
   }
 
   return buildAmazonSubscriptionResult(data, productId, purchaseToken);
@@ -286,9 +306,11 @@ async function verifyIapPurchase({
       return await verifyAmazonPurchase({ productId, purchaseToken, storeUserId });
     } catch (e) {
       console.warn("[iapVerify] Amazon verification failed:", e.message);
+      const retryable = e.retryable !== false;
       return {
         ok: false,
-        status: "verify_failed",
+        status: retryable ? "verify_failed" : "invalid",
+        retryable,
         platform: "amazon",
         source: "amazon_rvs",
         expiresAt: null,

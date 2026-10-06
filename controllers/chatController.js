@@ -168,6 +168,9 @@ function shouldRefreshStoreSubscription(user, force = false) {
 
 async function applyStoreVerification(user, verification) {
   if (!verification.ok) {
+    // Transient failure (network/throttling/config) is not proof the
+    // subscription ended — keep the current entitlement.
+    if (verification.retryable === true) return;
     await clearPremiumEntitlement(
       user,
       verification.status || "verify_failed",
@@ -273,19 +276,6 @@ async function buildEntitlement(user, options = {}) {
 }
 
 async function handleGetCareLimits(req, res) {
-  if (isAmazonClient(req)) {
-    return res.json({
-      success: true,
-      limits: {
-        guest: null,
-        registered: null,
-        pro: null,
-        proLabel: "unlimited",
-        amazon: null,
-        amazonLabel: "unlimited",
-      },
-    });
-  }
   return res.json({
     success: true,
     limits: buildCareLimitConfig(),
@@ -452,7 +442,6 @@ async function handleRespond(req, res) {
     }
 
     const entitlement = await buildEntitlement(user, {
-      amazonUnlimited: isAmazonClient(req),
     });
     if (entitlement.hardLocked) {
       const accountType = entitlement.isGuest ? "Guest" : "Free";
@@ -499,7 +488,6 @@ async function handleRespond(req, res) {
     return res.status(500).json({ error: NETWORK_ERROR });
   }
   const updatedEntitlement = await buildEntitlement(user, {
-    amazonUnlimited: isAmazonClient(req),
   });
 
   // Build OpenAI payload — cap at last 40 turns to stay within token limits
@@ -768,7 +756,6 @@ async function handleGetEntitlement(req, res) {
     return res.json({
       success: true,
       entitlement: await buildEntitlement(user, {
-        amazonUnlimited: isAmazonClient(req),
       }),
     });
   } catch (err) {
@@ -814,11 +801,13 @@ async function handleVerifyIapPurchase(req, res) {
     });
 
     if (!verification.ok) {
-      await clearPremiumEntitlement(
-        user,
-        verification.status || "verify_failed",
-        verification.source || "verify_failed"
-      );
+      if (verification.retryable !== true) {
+        await clearPremiumEntitlement(
+          user,
+          verification.status || "verify_failed",
+          verification.source || "verify_failed"
+        );
+      }
       return res.status(400).json({
         success: false,
         error: "Purchase verification failed",
