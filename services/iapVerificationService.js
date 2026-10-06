@@ -186,7 +186,11 @@ function buildAmazonSubscriptionResult(data, productId, receiptId) {
   const now = Date.now();
   // Amazon RVS identifies the SKU in `productId` (older payloads: `sku`).
   const responseProductId = data?.productId || data?.sku;
-  const productMatches = Boolean(responseProductId) && responseProductId === productId;
+  // Amazon subscriptions have a parent SKU (receipt.sku) and term SKUs
+  // (monthly/annual, in termSku); the app may send either.
+  const productMatches =
+    Boolean(productId) &&
+    [responseProductId, data?.termSku, data?.term].some((v) => v && v === productId);
   const receiptMatches = Boolean(data?.receiptId) && data.receiptId === receiptId;
   const isSubscription = data?.productType === "SUBSCRIPTION";
   const identityValid = productMatches && receiptMatches && isSubscription;
