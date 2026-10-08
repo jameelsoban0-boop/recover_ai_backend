@@ -133,6 +133,27 @@ function isAmazonClient(req) {
   return bodyPlatform === "amazon";
 }
 
+function maskEmail(email) {
+  const [name = "", domain = ""] = String(email || "").split("@");
+  if (!domain) return "another user";
+  return `${name.slice(0, 2)}***@${domain}`;
+}
+
+function describeVerificationFailure(v) {
+  if (v?.retryable) {
+    return `The store could not be reached to confirm your purchase${
+      v.reason ? ` (${v.reason})` : ""
+    }. Please try again in a moment.`;
+  }
+  if (v?.status === "expired") {
+    return "This subscription has expired or was cancelled. Renew it in the store to unlock Premium.";
+  }
+  if (v?.status === "unsupported") {
+    return "Purchases are not supported on this platform.";
+  }
+  return `Purchase verification failed${v?.reason ? `: ${v.reason}` : "."}`;
+}
+
 async function clearPremiumEntitlement(user, status = "inactive", source = "restore") {
   user.isPro = false;
   user.subscriptionPlan = "Free";
@@ -792,6 +813,28 @@ async function handleVerifyIapPurchase(req, res) {
       });
     }
 
+    // One store subscription belongs to exactly one RecoverAI account. Two
+    // users signing in on the same device share the same Play/Amazon account,
+    // so without this the second user could "restore" the first one's plan.
+    const owner = await User.findOne({
+      _id: { $ne: user._id },
+      "subscription.purchaseToken": purchaseToken,
+      isPro: true,
+    }).select("email subscription.expiresAt");
+    const ownerExpiresMs = owner?.subscription?.expiresAt
+      ? new Date(owner.subscription.expiresAt).getTime()
+      : 0;
+    if (owner && (!ownerExpiresMs || ownerExpiresMs > Date.now())) {
+      return res.status(409).json({
+        success: false,
+        code: "SUBSCRIPTION_LINKED_TO_OTHER_ACCOUNT",
+        error: `This store subscription is already linked to another RecoverAI account (${maskEmail(
+          owner.email
+        )}). Sign in with that account, or subscribe with a different store account.`,
+        entitlement: await buildEntitlement(user),
+      });
+    }
+
     const verification = await verifyIapPurchase({
       platform,
       productId,
@@ -801,7 +844,10 @@ async function handleVerifyIapPurchase(req, res) {
     });
 
     if (!verification.ok) {
-      if (verification.retryable !== true) {
+      // Only revoke Premium when the failed token is this user's own plan —
+      // a stale/foreign token must not wipe a valid subscription.
+      const isOwnToken = user.subscription?.purchaseToken === purchaseToken;
+      if (verification.retryable !== true && isOwnToken) {
         await clearPremiumEntitlement(
           user,
           verification.status || "verify_failed",
@@ -810,7 +856,8 @@ async function handleVerifyIapPurchase(req, res) {
       }
       return res.status(400).json({
         success: false,
-        error: "Purchase verification failed",
+        code: "PURCHASE_VERIFICATION_FAILED",
+        error: describeVerificationFailure(verification),
         verification,
         entitlement: await buildEntitlement(user),
       });
@@ -844,6 +891,25 @@ async function handleClearPremiumAfterRestore(req, res) {
   try {
     const user = await User.findById(req.authUser._id);
     if (!user) return res.status(404).json({ error: NOT_FOUND });
+
+    // The device's restore can come back empty or time out even though the
+    // user's trial / paid period is still running. Re-check the stored
+    // subscription with the store (and its expiry) before revoking anything.
+    const stored = user.subscription || {};
+    if (user.isPro && stored.productId && stored.purchaseToken) {
+      const verification = await refreshStoredStoreSubscription(user, { force: true });
+      const stillActive = verification
+        ? verification.ok === true
+        : Boolean(stored.expiresAt && new Date(stored.expiresAt).getTime() > Date.now());
+      if (stillActive) {
+        return res.json({
+          success: true,
+          kept: true,
+          message: "Your trial or subscription is still active.",
+          entitlement: await buildEntitlement(user),
+        });
+      }
+    }
 
     await clearPremiumEntitlement(user, "inactive", "restore_no_active_purchase");
 
