@@ -228,9 +228,33 @@ async function verifyAmazonPurchase({ productId, purchaseToken, storeUserId }) {
     throw new Error("Missing productId/purchaseToken/storeUserId");
   }
 
-  const baseUrl = amazonSandboxEnabled()
-    ? AMAZON_RVS_SANDBOX_URL
-    : AMAZON_RVS_PRODUCTION_URL;
+  // Amazon's review team and App Tester produce sandbox receipts that the
+  // production RVS rejects (400/404). Try production first, then sandbox, so
+  // both real and test purchases verify without flipping an env flag.
+  const order = amazonSandboxEnabled()
+    ? [AMAZON_RVS_SANDBOX_URL, AMAZON_RVS_PRODUCTION_URL]
+    : [AMAZON_RVS_PRODUCTION_URL, AMAZON_RVS_SANDBOX_URL];
+  let lastErr;
+  for (const baseUrl of order) {
+    try {
+      return await verifyAmazonReceiptAt(baseUrl, {
+        secret,
+        productId,
+        purchaseToken,
+        storeUserId,
+      });
+    } catch (e) {
+      lastErr = e;
+      if (![400, 404, 410].includes(e.httpStatus)) throw e;
+    }
+  }
+  throw lastErr;
+}
+
+async function verifyAmazonReceiptAt(
+  baseUrl,
+  { secret, productId, purchaseToken, storeUserId }
+) {
   const url = `${baseUrl}/version/1.0/verifyReceiptId/developer/${encodeURIComponent(
     secret
   )}/user/${encodeURIComponent(storeUserId)}/receiptId/${encodeURIComponent(

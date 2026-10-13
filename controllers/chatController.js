@@ -257,13 +257,21 @@ async function buildEntitlement(user, options = {}) {
   const totalUsed = await ensureUsageCounter(user);
   const amazonUnlimited = options.amazonUnlimited === true;
 
-  if (
-    !amazonUnlimited &&
-    computeUserIsPro(user) &&
-    user?.subscription?.expiresAt &&
-    new Date(user.subscription.expiresAt).getTime() <= Date.now()
-  ) {
-    await clearPremiumEntitlement(user, "expired", user.subscription?.source || "expiry_check");
+  if (!amazonUnlimited && computeUserIsPro(user)) {
+    const sub = user?.subscription || {};
+    const expiresMs = sub.expiresAt ? new Date(sub.expiresAt).getTime() : 0;
+    const lastVerifiedMs = sub.lastVerifiedAt ? new Date(sub.lastVerifiedAt).getTime() : 0;
+    const isStoreSub = ["android", "amazon"].includes(sub.platform);
+    // Past its end date -> expired. A store subscription with NO stored end
+    // date that the store hasn't confirmed for 48h is treated as ended too,
+    // otherwise a missing expiry (or a store check that keeps failing) would
+    // leave the user on Premium forever after the trial/subscription ends.
+    const expired = expiresMs
+      ? expiresMs <= Date.now()
+      : isStoreSub && (!lastVerifiedMs || Date.now() - lastVerifiedMs > 48 * 60 * 60 * 1000);
+    if (expired) {
+      await clearPremiumEntitlement(user, "expired", sub.source || "expiry_check");
+    }
   }
 
   const isPro = amazonUnlimited || computeUserIsPro(user);
