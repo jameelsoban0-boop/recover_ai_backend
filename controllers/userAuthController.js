@@ -137,6 +137,7 @@ async function handleUserLogin(req, res) {
       token: token,
       username: user.name,
       useremail: user.email,
+      image: user.image || null,
     });
   } catch (err) {
     res.status(500).json({ error: NETWORK_ERROR });

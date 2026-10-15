@@ -45,7 +45,8 @@ const APP_NAVIGATION_GUIDANCE = `Important in-app navigation rule:
 - If the user asks about running a scan, checking their Recycle Bin, viewing their backups, or restoring a file, do not invent results or numbers you don't have.
 - The chat context intentionally does not always include full scan/backup state because sending it can slow chat responses.
 - Answer naturally based on the user's wording: point them to the Scan tab to run a Smart Recovery Scan, the Library tab for Recycle Bin / Backups / Restored Files, and the Backup Guard tab to check or set up scheduled protection.
-- Do not claim a scan or restore has already happened unless that information was explicitly provided to you in this conversation.`;
+- Do not claim a scan or restore has already happened unless that information was explicitly provided to you in this conversation.
+- NEVER ask the user to provide, paste, or describe their scan results, backup details, file lists, or any device context. Never say you need more data about their device before you can help. Answer with what you know; if specifics aren't available, give general guidance and point to the right tab.`;
 
 function buildSystemPrompt(recoveryContext) {
   if (!recoveryContext || typeof recoveryContext !== "string" || !recoveryContext.trim()) {
@@ -105,9 +106,8 @@ function getModel() {
   return (process.env.OPENAI_MODEL || "gpt-4o-mini").trim();
 }
 
-// TODO: testing-only cap — raise back to a normal limit (e.g. 1024) before launch.
 function getMaxTokens() {
-  return Number(process.env.OPENAI_MAX_TOKENS) || 150;
+  return Number(process.env.OPENAI_MAX_TOKENS) || 1024;
 }
 
 function normalizeSubscriptionStatus(status) {
@@ -351,7 +351,8 @@ async function callOpenAI(messages, recoveryContext) {
  * reinstall/data clear) instead of relying only on the app's local counter.
  */
 async function handleGuestChat(req, res) {
-  const { messages, recoveryContext } = req.body;
+  const { messages } = req.body;
+  const recoveryContext = req.body.recoveryContext || req.body.deviceContext;
   const deviceId = String(req.headers["x-device-id"] || "").trim() || null;
 
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -450,10 +451,9 @@ async function handleRespond(req, res) {
   if (!content) return res.status(400).json({ error: "content is required" });
 
   const sessionId = req.body.sessionId;
+  const rawContext = req.body.recoveryContext || req.body.deviceContext;
   const recoveryContext =
-    typeof req.body.recoveryContext === "string" && req.body.recoveryContext.trim()
-      ? req.body.recoveryContext.trim()
-      : null;
+    typeof rawContext === "string" && rawContext.trim() ? rawContext.trim() : null;
 
   console.log("[chat respond] userId:", userId, "| sessionId:", sessionId, "| recoveryContext:", !!recoveryContext);
   if (recoveryContext) console.log("[chat respond] recoveryContext:\n", recoveryContext);
