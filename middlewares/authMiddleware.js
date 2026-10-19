@@ -18,6 +18,7 @@ async function authenticate(req, res, next) {
     if (!user) return res.status(401).json({ error: "User not found" });
     if (user.isBanned) {
       return res.status(403).json({
+        code: "ACCOUNT_BANNED",
         error: "Your account is banned. Please contact support.",
         bannedReason: user.bannedReason || "",
       });

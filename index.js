@@ -127,7 +127,6 @@ app.get("/", (req, res) => {
       notifications: {
         registerToken:
           "POST /api/notifications/register-token (token required; userId optional string or Mongo id; JWT optional)",
-        send: "POST /api/notifications/send",
       },
 
       promos: {

@@ -118,6 +118,7 @@ async function handleUserLogin(req, res) {
     if (!user) return res.status(400).json({ error: USER_NOT_FOUND });
     if (user.isBanned) {
       return res.status(403).json({
+        code: "ACCOUNT_BANNED",
         error: "Your account is banned. Please contact support.",
         bannedReason: user.bannedReason || "",
       });
@@ -195,6 +196,7 @@ async function handleGoogleLogin(req, res) {
 
     if (user.isBanned) {
       return res.status(403).json({
+        code: "ACCOUNT_BANNED",
         error: "Your account is banned. Please contact support.",
         bannedReason: user.bannedReason || "",
       });

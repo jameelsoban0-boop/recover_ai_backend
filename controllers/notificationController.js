@@ -1,7 +1,6 @@
 const mongoose = require("mongoose");
 const User = require("../models/userModel");
 const PushDeviceToken = require("../models/pushDeviceTokenModel");
-const { ensureFirebaseAdmin } = require("../utils/firebaseAdminInit");
 
 function buildDeviceInfo(deviceInfo) {
   if (!deviceInfo || typeof deviceInfo !== "object") {
@@ -127,68 +126,6 @@ async function registerToken(req, res) {
   }
 }
 
-async function sendNotification(req, res) {
-  try {
-    const firebaseAdmin = ensureFirebaseAdmin();
-    if (!firebaseAdmin) {
-      return res.status(503).json({
-        success: false,
-        message: "Push notifications not configured. Missing Firebase setup.",
-      });
-    }
-
-    const user = req.authUser;
-    if (!user || !user._id) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized",
-      });
-    }
-
-    const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
-    const body = typeof req.body?.body === "string" ? req.body.body.trim() : "";
-    const data = req.body?.data && typeof req.body.data === "object" ? req.body.data : {};
-    if (!title || !body) {
-      return res.status(400).json({
-        success: false,
-        message: "title and body are required",
-      });
-    }
-
-    const freshUser = await User.findById(user._id).select("deviceTokens");
-    const tokens = (freshUser?.deviceTokens || []).map((d) => d.token).filter(Boolean);
-    if (!tokens.length) {
-      return res.status(404).json({
-        success: false,
-        message: "No device tokens found for user",
-      });
-    }
-
-    const response = await firebaseAdmin.messaging().sendEachForMulticast({
-      tokens,
-      notification: { title, body },
-      data: Object.entries(data).reduce((acc, [k, v]) => {
-        acc[String(k)] = String(v);
-        return acc;
-      }, {}),
-    });
-
-    return res.json({
-      success: true,
-      message: "Notification sent successfully",
-      successCount: response.successCount || 0,
-      failureCount: response.failureCount || 0,
-    });
-  } catch (error) {
-    console.error("[notification:sendNotification] error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to send notification",
-      error: error.message,
-    });
-  }
-}
-
 async function getTokens(req, res) {
   try {
     const user = req.authUser;
@@ -266,7 +203,6 @@ async function removeToken(req, res) {
 
 module.exports = {
   registerToken,
-  sendNotification,
   getTokens,
   removeToken,
 };
