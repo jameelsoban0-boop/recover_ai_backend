@@ -12,70 +12,31 @@ const ACTIVE_V2_STATES = new Set([
   "SUBSCRIPTION_STATE_IN_GRACE_PERIOD",
 ]);
 
-function strictVerifyEnabled() {
-  return (
-    process.env.IAP_ANDROID_STRICT_VERIFY === "1" ||
-    process.env.IAP_ANDROID_STRICT_VERIFY === "true"
-  );
-}
-
-function parseSkuList(value) {
-  return String(value || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/**
- * Known Premium subscription SKUs, per store. A successful store verification
- * only proves the productId was legitimately purchased — it does NOT prove
- * that product is actually RecoverAI's premium subscription (the store may
- * list other products too). Callers must check this before granting premium.
- */
-function isKnownPremiumProduct(platform, productId) {
-  const list =
-    platform === "amazon"
-      ? parseSkuList(process.env.PREMIUM_PRODUCT_IDS_AMAZON)
-      : parseSkuList(process.env.PREMIUM_PRODUCT_IDS_ANDROID);
-  if (list.length === 0) {
-    console.warn(
-      `[iapVerify] No ${platform === "amazon" ? "PREMIUM_PRODUCT_IDS_AMAZON" : "PREMIUM_PRODUCT_IDS_ANDROID"} configured — refusing to grant premium for any productId until it is set.`
-    );
-    return false;
-  }
-  return list.includes(productId);
-}
-
 function loadGoogleServiceAccount() {
   if (process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON) {
     try {
       return JSON.parse(process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON);
-    } catch (e) {
-      console.warn("[iapVerify] Invalid GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+    } catch {
+      throw new Error("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is invalid");
     }
   }
 
-  try {
-    const p = path.join(__dirname, "..", "google-play-service-account.json");
-    if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, "utf8"));
-    }
-  } catch (e) {
-    console.warn("[iapVerify] Could not read google-play-service-account.json:", e.message);
+  const file = path.join(__dirname, "..", "google-play-service-account.json");
+  if (fs.existsSync(file)) {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
   }
-
   return null;
 }
 
 async function getGoogleAccessToken() {
-  const sa = loadGoogleServiceAccount();
-  if (!sa?.client_email || !sa?.private_key) {
+  const serviceAccount = loadGoogleServiceAccount();
+  if (!serviceAccount?.client_email || !serviceAccount?.private_key) {
     throw new Error("Google Play service account is missing");
   }
 
   const client = new JWT({
-    email: sa.client_email,
-    key: sa.private_key,
+    email: serviceAccount.client_email,
+    key: serviceAccount.private_key,
     scopes: [GOOGLE_SCOPE],
   });
   const { token } = await client.getAccessToken();
@@ -83,17 +44,20 @@ async function getGoogleAccessToken() {
   return token;
 }
 
+function parseTime(value) {
+  if (!value) return 0;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
 function buildAndroidSubscriptionResult(data) {
-  const now = Date.now();
   const expiryMs = Number(data?.expiryTimeMillis || 0);
   const paymentState = data?.paymentState;
   const paymentOk =
     paymentState === undefined ||
     paymentState === null ||
-    paymentState === 1 ||
-    paymentState === 2 ||
-    paymentState === 3;
-  const active = expiryMs > now && paymentOk;
+    [1, 2, 3].includes(paymentState);
+  const active = expiryMs > Date.now() && paymentOk;
 
   return {
     ok: active,
@@ -102,219 +66,146 @@ function buildAndroidSubscriptionResult(data) {
     expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
     platform: "android",
     source: "google_play",
-    payload: {
-      paymentState,
-      cancelReason: data?.cancelReason,
-      autoRenewing: data?.autoRenewing,
-      orderId: data?.orderId,
-      priceCurrencyCode: data?.priceCurrencyCode,
-      priceAmountMicros: data?.priceAmountMicros,
-      countryCode: data?.countryCode,
-      purchaseType: data?.purchaseType,
-      acknowledgementState: data?.acknowledgementState,
-      kind: data?.kind,
-    },
+    payload: { paymentState, autoRenewing: data?.autoRenewing, orderId: data?.orderId },
   };
 }
 
-function parseTime(value) {
-  if (!value) return 0;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : 0;
-}
-
 function buildAndroidSubscriptionV2Result(data, productId) {
-  const now = Date.now();
   const lineItems = Array.isArray(data?.lineItems) ? data.lineItems : [];
-  const matchingLine =
-    lineItems.find((item) => item?.productId === productId) || lineItems[0] || null;
-  const expiryMs = Math.max(
-    0,
-    ...lineItems
-      .map((item) => parseTime(item?.expiryTime))
-      .filter((ms) => Number.isFinite(ms) && ms > 0)
-  );
-  const subscriptionState = data?.subscriptionState;
-  const active = expiryMs > now && ACTIVE_V2_STATES.has(subscriptionState);
-  const autoRenewingPlan = matchingLine?.autoRenewingPlan || null;
+  const matchingLine = lineItems.find((item) => item?.productId === productId);
+  const expiryMs = parseTime(matchingLine?.expiryTime);
+  const state = data?.subscriptionState;
+  const active =
+    Boolean(matchingLine) &&
+    expiryMs > Date.now() &&
+    ACTIVE_V2_STATES.has(state);
 
   return {
     ok: active,
     status: active ? "active" : "expired",
     autoRenewing: active
-      ? autoRenewingPlan?.autoRenewEnabled !== false &&
-        subscriptionState !== "SUBSCRIPTION_STATE_CANCELED"
+      ? matchingLine?.autoRenewingPlan?.autoRenewEnabled !== false &&
+        state !== "SUBSCRIPTION_STATE_CANCELED"
       : false,
     expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
     platform: "android",
     source: "google_play_v2",
-    payload: {
-      subscriptionState,
-      acknowledgementState: data?.acknowledgementState,
-      linkedPurchaseToken: data?.linkedPurchaseToken,
-      regionCode: data?.regionCode,
-      latestSuccessfulOrderId: matchingLine?.latestSuccessfulOrderId,
-      productId: matchingLine?.productId,
-      autoRenewEnabled: autoRenewingPlan?.autoRenewEnabled,
-      planType: matchingLine?.autoRenewingPlan
-        ? "auto_renewing"
-        : matchingLine?.prepaidPlan
-        ? "prepaid"
-        : null,
-      kind: data?.kind,
-    },
+    payload: { subscriptionState: state, productId: matchingLine?.productId },
   };
 }
 
 function amazonSandboxEnabled() {
-  const value = String(process.env.AMAZON_RVS_SANDBOX || "").trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes";
-}
-
-function amazonSharedSecret() {
-  return (
-    process.env.AMAZON_RVS_SHARED_SECRET ||
-    process.env.AMAZON_DEVELOPER_SECRET ||
-    ""
-  ).trim();
+  return ["1", "true", "yes"].includes(
+    String(process.env.AMAZON_RVS_SANDBOX || "").trim().toLowerCase()
+  );
 }
 
 function buildAmazonSubscriptionResult(data, productId, receiptId) {
-  const cancelDateMs = Number(data?.cancelDate || 0);
-  const renewalDateMs = Number(data?.renewalDate || 0);
-  const purchaseDateMs = Number(data?.purchaseDate || 0);
-  const now = Date.now();
-  // Amazon RVS identifies the SKU in `productId` (older payloads: `sku`).
+  const cancelMs = Number(data?.cancelDate || 0);
+  const renewalMs = Number(data?.renewalDate || 0);
   const responseProductId = data?.productId || data?.sku;
-  // Amazon subscriptions have a parent SKU (receipt.sku) and term SKUs
-  // (monthly/annual, in termSku); the app may send either.
   const productMatches =
     Boolean(productId) &&
-    [responseProductId, data?.termSku, data?.term].some((v) => v && v === productId);
-  const receiptMatches = Boolean(data?.receiptId) && data.receiptId === receiptId;
-  const isSubscription = data?.productType === "SUBSCRIPTION";
-  const identityValid = productMatches && receiptMatches && isSubscription;
+    [responseProductId, data?.termSku, data?.term].some((value) => value === productId);
+  const receiptMatches = data?.receiptId === receiptId;
+  const identityValid =
+    productMatches && receiptMatches && data?.productType === "SUBSCRIPTION";
   const active =
-    identityValid && !cancelDateMs && (!renewalDateMs || renewalDateMs > now);
+    identityValid && !cancelMs && (!renewalMs || renewalMs > Date.now());
 
   return {
     ok: active,
     status: !identityValid ? "invalid" : active ? "active" : "expired",
     retryable: false,
     autoRenewing: active ? data?.autoRenewing !== false : false,
-    expiresAt: renewalDateMs ? new Date(renewalDateMs).toISOString() : null,
+    expiresAt: renewalMs ? new Date(renewalMs).toISOString() : null,
     platform: "amazon",
     source: "amazon_rvs",
     payload: {
       receiptId,
       productId: responseProductId,
-      sku: data?.sku,
       productType: data?.productType,
-      purchaseDate: purchaseDateMs ? new Date(purchaseDateMs).toISOString() : null,
-      cancelDate: cancelDateMs ? new Date(cancelDateMs).toISOString() : null,
-      renewalDate: renewalDateMs ? new Date(renewalDateMs).toISOString() : null,
-      autoRenewing: data?.autoRenewing,
-      term: data?.term,
-      betaProduct: data?.betaProduct,
-      testTransaction: data?.testTransaction,
+      cancelDate: cancelMs ? new Date(cancelMs).toISOString() : null,
+      renewalDate: renewalMs ? new Date(renewalMs).toISOString() : null,
     },
   };
 }
 
 async function verifyAmazonPurchase({ productId, purchaseToken, storeUserId }) {
-  const secret = amazonSharedSecret();
-  if (!secret) throw new Error("Amazon RVS shared secret is missing");
+  const secret = (
+    process.env.AMAZON_SHARED_SECRET ||
+    process.env.AMAZON_RVS_SHARED_SECRET ||
+    process.env.AMAZON_DEVELOPER_SECRET ||
+    ""
+  ).trim();
+  if (!secret) {
+    const error = new Error("Amazon RVS shared secret is missing");
+    error.retryable = true;
+    throw error;
+  }
   if (!productId || !purchaseToken || !storeUserId) {
-    throw new Error("Missing productId/purchaseToken/storeUserId");
+    const error = new Error("Missing productId, purchaseToken, or storeUserId");
+    error.retryable = false;
+    throw error;
   }
 
-  // Amazon's review team and App Tester produce sandbox receipts that the
-  // production RVS rejects (400/404). Try production first, then sandbox, so
-  // both real and test purchases verify without flipping an env flag.
-  const order = amazonSandboxEnabled()
+  const endpoints = amazonSandboxEnabled()
     ? [AMAZON_RVS_SANDBOX_URL, AMAZON_RVS_PRODUCTION_URL]
     : [AMAZON_RVS_PRODUCTION_URL, AMAZON_RVS_SANDBOX_URL];
-  let lastErr;
-  for (const baseUrl of order) {
+  let lastError;
+  for (const baseUrl of endpoints) {
+    let response;
     try {
-      return await verifyAmazonReceiptAt(baseUrl, {
-        secret,
-        productId,
-        purchaseToken,
-        storeUserId,
-      });
-    } catch (e) {
-      lastErr = e;
-      if (![400, 404, 410].includes(e.httpStatus)) throw e;
+      const url =
+        `${baseUrl}/version/1.0/verifyReceiptId/developer/${encodeURIComponent(secret)}` +
+        `/user/${encodeURIComponent(storeUserId)}/receiptId/${encodeURIComponent(purchaseToken)}`;
+      response = await fetch(url, { headers: { Accept: "application/json" } });
+    } catch (cause) {
+      const error = new Error(`Amazon RVS request failed: ${cause.message}`);
+      error.retryable = true;
+      throw error;
     }
-  }
-  throw lastErr;
-}
 
-async function verifyAmazonReceiptAt(
-  baseUrl,
-  { secret, productId, purchaseToken, storeUserId }
-) {
-  const url = `${baseUrl}/version/1.0/verifyReceiptId/developer/${encodeURIComponent(
-    secret
-  )}/user/${encodeURIComponent(storeUserId)}/receiptId/${encodeURIComponent(
-    purchaseToken
-  )}`;
+    const data = await response.json().catch(() => ({}));
+    if (response.ok) return buildAmazonSubscriptionResult(data, productId, purchaseToken);
 
-  let response;
-  try {
-    response = await fetch(url, { headers: { Accept: "application/json" } });
-  } catch (e) {
-    const err = new Error(`Amazon RVS request failed: ${e.message}`);
-    err.retryable = true;
-    throw err;
+    lastError = new Error(data?.message || `Amazon RVS verify failed (${response.status})`);
+    lastError.httpStatus = response.status;
+    lastError.retryable = ![400, 404, 410].includes(response.status);
+    if (lastError.retryable) throw lastError;
   }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const err = new Error(data?.message || `Amazon RVS verify failed (${response.status})`);
-    err.httpStatus = response.status;
-    // 400/404/410 = definitive invalid/cancelled receipt; anything else is
-    // transient/config and must not revoke an existing subscription.
-    err.retryable = ![400, 404, 410].includes(response.status);
-    throw err;
-  }
-
-  return buildAmazonSubscriptionResult(data, productId, purchaseToken);
+  throw lastError;
 }
 
 async function verifyAndroidPurchase({ packageName, productId, purchaseToken }) {
   if (!packageName || !productId || !purchaseToken) {
-    throw new Error("Missing packageName/productId/purchaseToken");
+    throw new Error("Missing packageName, productId, or purchaseToken");
   }
-
   const accessToken = await getGoogleAccessToken();
+  const base =
+    "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/" +
+    `${encodeURIComponent(packageName)}/purchases`;
+  const headers = { Authorization: `Bearer ${accessToken}` };
 
-  const v2Url = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(
-    packageName
-  )}/purchases/subscriptionsv2/tokens/${encodeURIComponent(purchaseToken)}`;
-
-  const v2Response = await fetch(v2Url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const v2Response = await fetch(
+    `${base}/subscriptionsv2/tokens/${encodeURIComponent(purchaseToken)}`,
+    { headers }
+  );
   const v2Data = await v2Response.json().catch(() => ({}));
   if (v2Response.ok) {
-    return buildAndroidSubscriptionV2Result(v2Data, productId);
+    const result = buildAndroidSubscriptionV2Result(v2Data, productId);
+    if (result.payload.productId && result.payload.productId !== productId) {
+      return { ...result, ok: false, status: "invalid" };
+    }
+    return result;
   }
 
-  console.warn(
-    "[iapVerify] subscriptionsv2 failed; trying legacy endpoint:",
-    v2Data?.error?.message || v2Response.status
+  const response = await fetch(
+    `${base}/subscriptions/${encodeURIComponent(productId)}/tokens/${encodeURIComponent(
+      purchaseToken
+    )}`,
+    { headers }
   );
-
-  const legacyUrl = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(
-    packageName
-  )}/purchases/subscriptions/${encodeURIComponent(productId)}/tokens/${encodeURIComponent(
-    purchaseToken
-  )}`;
-
-  const response = await fetch(legacyUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(data?.error?.message || `Google Play verify failed (${response.status})`);
@@ -322,28 +213,22 @@ async function verifyAndroidPurchase({ packageName, productId, purchaseToken }) 
   return buildAndroidSubscriptionResult(data);
 }
 
-async function verifyIapPurchase({
-  platform,
-  productId,
-  purchaseToken,
-  packageName,
-  storeUserId,
-}) {
+async function verifyIapPurchase({ platform, productId, purchaseToken, packageName, storeUserId }) {
   if (platform === "amazon") {
     try {
       return await verifyAmazonPurchase({ productId, purchaseToken, storeUserId });
-    } catch (e) {
-      console.warn("[iapVerify] Amazon verification failed:", e.message);
-      const retryable = e.retryable !== false;
+    } catch (error) {
+      console.warn("[iapVerify] Amazon verification failed:", error.message);
+      const retryable = error.retryable !== false;
       return {
         ok: false,
         status: retryable ? "verify_failed" : "invalid",
         retryable,
-        platform: "amazon",
+        platform,
         source: "amazon_rvs",
         expiresAt: null,
         payload: {},
-        reason: e.message,
+        reason: error.message,
       };
     }
   }
@@ -356,43 +241,34 @@ async function verifyIapPurchase({
       source: "none",
       expiresAt: null,
       payload: {},
-      reason: "Only android verification is implemented on this backend",
+      reason: "Only Android and Amazon verification are supported",
     };
   }
 
-  const appPackage =
-    packageName || process.env.ANDROID_PACKAGE_NAME || DEFAULT_ANDROID_PACKAGE_NAME;
   try {
     return await verifyAndroidPurchase({
-      packageName: appPackage,
+      packageName: packageName || process.env.ANDROID_PACKAGE_NAME || DEFAULT_ANDROID_PACKAGE_NAME,
       productId,
       purchaseToken,
     });
-  } catch (e) {
-    const strict = strictVerifyEnabled();
-    console.warn("[iapVerify] Android verification failed:", e.message);
-    if (strict) {
-      return {
-        ok: false,
-        status: "verify_failed",
-        platform: "android",
-        source: "google_play",
-        expiresAt: null,
-        payload: {},
-        reason: e.message,
-      };
-    }
-
+  } catch (error) {
+    console.warn("[iapVerify] Google Play verification failed:", error.message);
     return {
-      ok: Boolean(purchaseToken && productId),
-      status: purchaseToken && productId ? "active" : "verify_failed",
+      ok: false,
+      status: "verify_failed",
+      retryable: true,
       platform: "android",
-      source: "fallback_dev",
+      source: "google_play",
       expiresAt: null,
-      payload: { warning: "strict verification disabled" },
-      reason: "Strict verification disabled; using fallback",
+      payload: {},
+      reason: error.message,
     };
   }
 }
 
-module.exports = { verifyIapPurchase, isKnownPremiumProduct };
+module.exports = {
+  verifyIapPurchase,
+  buildAndroidSubscriptionResult,
+  buildAndroidSubscriptionV2Result,
+  buildAmazonSubscriptionResult,
+};

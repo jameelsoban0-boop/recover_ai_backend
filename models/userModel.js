@@ -95,6 +95,7 @@ const userSchema = new mongoose.Schema(
         default: "none",
       },
       productId: { type: String, trim: true },
+      packageName: { type: String, trim: true },
       purchaseToken: { type: String, trim: true },
       storeUserId: { type: String, trim: true },
       originalTransactionId: { type: String, trim: true },

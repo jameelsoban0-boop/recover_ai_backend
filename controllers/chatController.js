@@ -4,7 +4,9 @@ const ChatSession = require("../models/chatModel");
 const ChatUsage = require("../models/chatUsageModel");
 const User = require("../models/userModel");
 const { NETWORK_ERROR, INVALID_ID, NOT_FOUND } = require("../messages/message");
-const { verifyIapPurchase, isKnownPremiumProduct } = require("../services/iapVerificationService");
+const {
+  verifyIapPurchase,
+} = require("../services/iapVerificationService");
 const { getOpenAiApiKey } = require("../services/openAiKeyService");
 const {
   buildCareLimitConfig,
@@ -124,36 +126,6 @@ function normalizeSubscriptionStatus(status) {
   return allowed.has(normalized) ? normalized : "inactive";
 }
 
-function isAmazonClient(req) {
-  const header = String(req.get?.("X-Client-Platform") || req.headers?.["x-client-platform"] || "")
-    .trim()
-    .toLowerCase();
-  if (header === "amazon") return true;
-  const bodyPlatform = String(req.body?.platform || "").trim().toLowerCase();
-  return bodyPlatform === "amazon";
-}
-
-function maskEmail(email) {
-  const [name = "", domain = ""] = String(email || "").split("@");
-  if (!domain) return "another user";
-  return `${name.slice(0, 2)}***@${domain}`;
-}
-
-function describeVerificationFailure(v) {
-  if (v?.retryable) {
-    return `The store could not be reached to confirm your purchase${
-      v.reason ? ` (${v.reason})` : ""
-    }. Please try again in a moment.`;
-  }
-  if (v?.status === "expired") {
-    return "This subscription has expired or was cancelled. Renew it in the store to unlock Premium.";
-  }
-  if (v?.status === "unsupported") {
-    return "Purchases are not supported on this platform.";
-  }
-  return `Purchase verification failed${v?.reason ? `: ${v.reason}` : "."}`;
-}
-
 async function clearPremiumEntitlement(user, status = "inactive", source = "restore") {
   user.isPro = false;
   user.subscriptionPlan = "Free";
@@ -166,12 +138,32 @@ async function clearPremiumEntitlement(user, status = "inactive", source = "rest
   await user.save();
 }
 
+function describeVerificationFailure(verification) {
+  if (verification?.retryable) {
+    return `The store could not be reached to confirm your purchase${
+      verification.reason ? ` (${verification.reason})` : ""
+    }. Please try again in a moment.`;
+  }
+  if (verification?.status === "expired") {
+    return "This subscription has expired or was cancelled. Renew it in the store to unlock Premium.";
+  }
+  if (verification?.status === "unsupported_platform") {
+    return "Purchases are not supported on this platform.";
+  }
+  return `Purchase verification failed${verification?.reason ? `: ${verification.reason}` : "."}`;
+}
+
+function maskEmail(email) {
+  const [name = "", domain = ""] = String(email || "").split("@");
+  return domain ? `${name.slice(0, 2)}***@${domain}` : "another user";
+}
+
 function shouldRefreshStoreSubscription(user, force = false) {
-  if (force) return true;
   const subscription = user?.subscription || {};
   if (!["android", "amazon"].includes(subscription.platform)) return false;
   if (!subscription.productId || !subscription.purchaseToken) return false;
   if (subscription.platform === "amazon" && !subscription.storeUserId) return false;
+  if (force) return true;
 
   const now = Date.now();
   const lastVerifiedMs = subscription.lastVerifiedAt
@@ -180,17 +172,15 @@ function shouldRefreshStoreSubscription(user, force = false) {
   const expiresAtMs = subscription.expiresAt
     ? new Date(subscription.expiresAt).getTime()
     : 0;
-
-  if (!lastVerifiedMs || now - lastVerifiedMs >= STORE_REFRESH_INTERVAL_MS) {
-    return true;
-  }
-  return Boolean(expiresAtMs && expiresAtMs - now <= STORE_REFRESH_EXPIRY_WINDOW_MS);
+  return (
+    !lastVerifiedMs ||
+    now - lastVerifiedMs >= STORE_REFRESH_INTERVAL_MS ||
+    Boolean(expiresAtMs && expiresAtMs - now <= STORE_REFRESH_EXPIRY_WINDOW_MS)
+  );
 }
 
 async function applyStoreVerification(user, verification) {
   if (!verification.ok) {
-    // Transient failure (network/throttling/config) is not proof the
-    // subscription ended — keep the current entitlement.
     if (verification.retryable === true) return;
     await clearPremiumEntitlement(
       user,
@@ -214,9 +204,8 @@ async function applyStoreVerification(user, verification) {
 }
 
 async function refreshStoredStoreSubscription(user, options = {}) {
-  const force = options.force === true;
   const subscription = user?.subscription || {};
-  if (!shouldRefreshStoreSubscription(user, force)) return null;
+  if (!shouldRefreshStoreSubscription(user, options.force === true)) return null;
 
   try {
     const verification = await verifyIapPurchase({
@@ -227,8 +216,8 @@ async function refreshStoredStoreSubscription(user, options = {}) {
     });
     await applyStoreVerification(user, verification);
     return verification;
-  } catch (err) {
-    console.warn("[chat entitlement] store refresh failed:", err.message);
+  } catch (error) {
+    console.warn("[chat entitlement] store refresh failed:", error.message);
     return null;
   }
 }
@@ -253,30 +242,28 @@ async function ensureUsageCounter(user) {
   return stored;
 }
 
-async function buildEntitlement(user, options = {}) {
+async function buildEntitlement(user) {
   const totalUsed = await ensureUsageCounter(user);
-  const amazonUnlimited = options.amazonUnlimited === true;
 
-  if (!amazonUnlimited && computeUserIsPro(user)) {
+  if (computeUserIsPro(user)) {
     const sub = user?.subscription || {};
     const expiresMs = sub.expiresAt ? new Date(sub.expiresAt).getTime() : 0;
-    const lastVerifiedMs = sub.lastVerifiedAt ? new Date(sub.lastVerifiedAt).getTime() : 0;
-    const isStoreSub = ["android", "amazon"].includes(sub.platform);
-    // Past its end date -> expired. A store subscription with NO stored end
-    // date that the store hasn't confirmed for 48h is treated as ended too,
-    // otherwise a missing expiry (or a store check that keeps failing) would
-    // leave the user on Premium forever after the trial/subscription ends.
+    const lastVerifiedMs = sub.lastVerifiedAt
+      ? new Date(sub.lastVerifiedAt).getTime()
+      : 0;
+    const isStoreSubscription = ["android", "amazon"].includes(sub.platform);
     const expired = expiresMs
       ? expiresMs <= Date.now()
-      : isStoreSub && (!lastVerifiedMs || Date.now() - lastVerifiedMs > 48 * 60 * 60 * 1000);
+      : isStoreSubscription &&
+        (!lastVerifiedMs || Date.now() - lastVerifiedMs > 48 * 60 * 60 * 1000);
     if (expired) {
       await clearPremiumEntitlement(user, "expired", sub.source || "expiry_check");
     }
   }
 
-  const isPro = amazonUnlimited || computeUserIsPro(user);
+  const isPro = computeUserIsPro(user);
   const isGuest = isGuestUser(user);
-  const limit = amazonUnlimited ? null : getCareChatLimitForUser(user);
+  const limit = getCareChatLimitForUser(user);
   return {
     isPro,
     isGuest,
@@ -288,18 +275,13 @@ async function buildEntitlement(user, options = {}) {
     remaining: isPro ? null : Math.max(0, limit - totalUsed),
     hardLocked: !isPro && totalUsed >= limit,
     subscription: {
-      plan: amazonUnlimited
-        ? "Amazon"
-        : user.subscriptionPlan || (isPro ? "Premium" : "Free"),
-      status: amazonUnlimited
-        ? "active"
-        : user?.subscription?.status || (isPro ? "active" : "inactive"),
-      productId: user?.subscription?.productId || null,
-      platform: amazonUnlimited ? "amazon" : user?.subscription?.platform || "none",
+      plan: user.subscriptionPlan || (isPro ? "Premium" : "Free"),
+      status: user?.subscription?.status || (isPro ? "active" : "inactive"),
       expiresAt: user?.subscription?.expiresAt || null,
+      platform: user?.subscription?.platform || "none",
       autoRenewing: user?.subscription?.autoRenewing !== false,
       lastVerifiedAt: user?.subscription?.lastVerifiedAt || null,
-      source: amazonUnlimited ? "amazon" : user?.subscription?.source || "none",
+      source: user?.subscription?.source || "none",
     },
   };
 }
@@ -470,8 +452,8 @@ async function handleRespond(req, res) {
       });
     }
 
-    const entitlement = await buildEntitlement(user, {
-    });
+    await refreshStoredStoreSubscription(user);
+    const entitlement = await buildEntitlement(user);
     if (entitlement.hardLocked) {
       const accountType = entitlement.isGuest ? "Guest" : "Free";
       return res.status(402).json({
@@ -516,8 +498,7 @@ async function handleRespond(req, res) {
     console.error("[chat respond] save user msg:", err);
     return res.status(500).json({ error: NETWORK_ERROR });
   }
-  const updatedEntitlement = await buildEntitlement(user, {
-  });
+  const updatedEntitlement = await buildEntitlement(user);
 
   // Build OpenAI payload — cap at last 40 turns to stay within token limits
   const history = session.messages.slice(-40).map((m) => ({
@@ -779,13 +760,10 @@ async function handleGetEntitlement(req, res) {
   try {
     const user = await User.findById(req.authUser._id);
     if (!user) return res.status(404).json({ error: NOT_FOUND });
-    // ?refresh=1: the app asks for a live store re-check (e.g. after returning
-    // from the store's manage-subscription page) so cancel/renew shows at once.
     await refreshStoredStoreSubscription(user, { force: req.query?.refresh === "1" });
     return res.json({
       success: true,
-      entitlement: await buildEntitlement(user, {
-      }),
+      entitlement: await buildEntitlement(user),
     });
   } catch (err) {
     console.error("[chat entitlement]", err);
@@ -806,24 +784,12 @@ async function handleVerifyIapPurchase(req, res) {
       transactionId,
       storeUserId,
     } = req.body || {};
-
     if (!productId || !purchaseToken) {
       return res.status(400).json({
         error: "productId and purchaseToken are required",
         entitlement: await buildEntitlement(user),
       });
     }
-
-    if (!isKnownPremiumProduct(platform, productId)) {
-      return res.status(400).json({
-        error: "productId is not a recognised RecoverAI Premium subscription",
-        entitlement: await buildEntitlement(user),
-      });
-    }
-
-    // One store subscription belongs to exactly one RecoverAI account. Two
-    // users signing in on the same device share the same Play/Amazon account,
-    // so without this the second user could "restore" the first one's plan.
     const owner = await User.findOne({
       _id: { $ne: user._id },
       "subscription.purchaseToken": purchaseToken,
@@ -850,21 +816,22 @@ async function handleVerifyIapPurchase(req, res) {
       packageName,
       storeUserId,
     });
-
     if (!verification.ok) {
-      // Only revoke Premium when the failed token is this user's own plan —
-      // a stale/foreign token must not wipe a valid subscription.
-      const isOwnToken = user.subscription?.purchaseToken === purchaseToken;
-      if (verification.retryable !== true && isOwnToken) {
+      if (
+        verification.retryable !== true &&
+        user.subscription?.purchaseToken === purchaseToken
+      ) {
         await clearPremiumEntitlement(
           user,
           verification.status || "verify_failed",
           verification.source || "verify_failed"
         );
       }
-      return res.status(400).json({
+      return res.status(verification.retryable ? 503 : 400).json({
         success: false,
-        code: "PURCHASE_VERIFICATION_FAILED",
+        code: verification.retryable
+          ? "VERIFICATION_UNAVAILABLE"
+          : "PURCHASE_VERIFICATION_FAILED",
         error: describeVerificationFailure(verification),
         verification,
         entitlement: await buildEntitlement(user),
@@ -874,6 +841,7 @@ async function handleVerifyIapPurchase(req, res) {
     user.subscription = {
       platform,
       productId,
+      packageName: packageName || null,
       purchaseToken,
       storeUserId: storeUserId || null,
       originalTransactionId: transactionId || null,
@@ -882,15 +850,14 @@ async function handleVerifyIapPurchase(req, res) {
       source: "pending",
     };
     await applyStoreVerification(user, verification);
-
     return res.json({
       success: true,
       message: "Purchase verified and premium unlocked",
       verification,
       entitlement: await buildEntitlement(user),
     });
-  } catch (err) {
-    console.error("[chat verify iap]", err);
+  } catch (error) {
+    console.error("[chat verify iap]", error);
     return res.status(500).json({ error: "Failed to verify purchase" });
   }
 }
@@ -900,34 +867,30 @@ async function handleClearPremiumAfterRestore(req, res) {
     const user = await User.findById(req.authUser._id);
     if (!user) return res.status(404).json({ error: NOT_FOUND });
 
-    // The device's restore can come back empty or time out even though the
-    // user's trial / paid period is still running. Re-check the stored
-    // subscription with the store (and its expiry) before revoking anything.
     const stored = user.subscription || {};
     if (user.isPro && stored.productId && stored.purchaseToken) {
       const verification = await refreshStoredStoreSubscription(user, { force: true });
       const stillActive = verification
-        ? verification.ok === true
+        ? verification.ok === true || verification.retryable === true
         : Boolean(stored.expiresAt && new Date(stored.expiresAt).getTime() > Date.now());
       if (stillActive) {
         return res.json({
           success: true,
           kept: true,
-          message: "Your trial or subscription is still active.",
+          message: "Your subscription is still active or could not be checked.",
           entitlement: await buildEntitlement(user),
         });
       }
     }
 
     await clearPremiumEntitlement(user, "inactive", "restore_no_active_purchase");
-
     return res.json({
       success: true,
       message: "No active restored purchase found. Premium removed.",
       entitlement: await buildEntitlement(user),
     });
-  } catch (err) {
-    console.error("[chat clear premium after restore]", err);
+  } catch (error) {
+    console.error("[chat clear premium after restore]", error);
     return res.status(500).json({ error: "Failed to clear premium after restore" });
   }
 }
